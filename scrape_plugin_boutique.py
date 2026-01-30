@@ -24,13 +24,9 @@ OUTPUT_FILE = OUTPUT_DIR / "plugin_data.csv"
 
 # スクレイピング対象URL（複数カテゴリ）
 DEALS_URLS = [
-    f"{BASE_URL}/deals?shortcut=featured",
-    f"{BASE_URL}/deals?featured=true&shortcut=new_deals",
-    f"{BASE_URL}/deals?shortcut=all&sort=new_deals",
-    f"{BASE_URL}/deals?shortcut=synths",
-    f"{BASE_URL}/deals?categories_ids%5B%5D=4&shortcut=effects",
-    f"{BASE_URL}/deals?categories_ids%5B%5D=2&shortcut=virtual_instruments",
-    f"{BASE_URL}/deals?categories_ids%5B%5D=64&shortcut=bundles",
+    f"{BASE_URL}/deals?featured=true&shortcut=all",
+    f"{BASE_URL}/deals?shortcut=effects",
+    f"{BASE_URL}/deals?categories_ids%5B%5D=2&shortcut=bundles",
 ]
 
 # スクレイピング設定
