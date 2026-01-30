@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 # 設定
 BASE_URL = "https://www.pluginboutique.com"
-DEALS_URL = f"{BASE_URL}/deals?order=saving_desc"
+DEALS_URL = f"{BASE_URL}/deals"
 AFFILIATE_ID = "688228cd487ff"
 MAX_ITEMS = 50
 OUTPUT_DIR = Path("output")
@@ -101,11 +101,16 @@ def scrape_deals() -> list[dict]:
                 # それでも続行を試みる
                 time.sleep(5)
 
-            # ページ全体をスクロールして遅延読み込みコンテンツを取得
+            # ページ全体をスクロールして遅延読み込みコンテンツを取得（50件以上読み込む）
             print("ページをスクロール中...")
-            for _ in range(3):
+            for i in range(10):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(1)
+                time.sleep(1.5)
+                # 現在の商品数をチェック
+                current_count = len(page.query_selector_all("a[href*='/product/']"))
+                print(f"  スクロール {i+1}/10: {current_count} 件検出")
+                if current_count >= 100:  # 十分な数が読み込まれたら終了
+                    break
             page.evaluate("window.scrollTo(0, 0)")
             time.sleep(1)
 
@@ -116,7 +121,8 @@ def scrape_deals() -> list[dict]:
             seen_urls = set()
 
             for link in product_links:
-                if len(products) >= MAX_ITEMS:
+                # フィルタリング前に多めに取得するため、制限を緩める
+                if len(products) >= MAX_ITEMS * 3:
                     break
 
                 try:
@@ -313,8 +319,15 @@ def main():
 
         print(f"\n取得件数: {len(unique_products)} 件（重複排除後）")
 
+        # セール品のみフィルタリング（セール率と定価が両方あるもの）
+        sale_products = [
+            p for p in unique_products
+            if p.get("discount_rate") and p.get("original_price")
+        ]
+        print(f"セール品: {len(sale_products)} 件（フィルタリング後）")
+
         # CSVに保存
-        save_to_csv(unique_products[:MAX_ITEMS], OUTPUT_FILE)
+        save_to_csv(sale_products[:MAX_ITEMS], OUTPUT_FILE)
 
         print("\n処理が完了しました")
         return 0
