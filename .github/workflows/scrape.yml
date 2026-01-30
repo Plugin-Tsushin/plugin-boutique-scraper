@@ -65,6 +65,8 @@ jobs:
           git add output/plugin_data.csv
           # 変更がある場合のみコミット
           git diff --staged --quiet || git commit -m "Update plugin deals data - $(date -u '+%Y-%m-%d %H:%M UTC')"
+          # プッシュ前にリベースして競合を防ぐ
+          git pull --rebase origin main
           git push
 
       - name: Upload CSV as artifact
