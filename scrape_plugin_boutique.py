@@ -17,15 +17,26 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 # 設定
 BASE_URL = "https://www.pluginboutique.com"
-DEALS_URL = f"{BASE_URL}/deals"
 AFFILIATE_ID = "688228cd487ff"
 MAX_ITEMS = 50
 OUTPUT_DIR = Path("output")
 OUTPUT_FILE = OUTPUT_DIR / "plugin_data.csv"
 
+# スクレイピング対象URL（複数カテゴリ）
+DEALS_URLS = [
+    f"{BASE_URL}/deals?shortcut=featured",
+    f"{BASE_URL}/deals?featured=true&shortcut=new_deals",
+    f"{BASE_URL}/deals?shortcut=all&sort=new_deals",
+    f"{BASE_URL}/deals?shortcut=synths",
+    f"{BASE_URL}/deals?categories_ids%5B%5D=4&shortcut=effects",
+    f"{BASE_URL}/deals?categories_ids%5B%5D=2&shortcut=virtual_instruments",
+    f"{BASE_URL}/deals?categories_ids%5B%5D=64&shortcut=bundles",
+]
+
 # スクレイピング設定
 REQUEST_TIMEOUT = 60000  # 60秒
 WAIT_FOR_SELECTOR_TIMEOUT = 30000  # 30秒
+PAGE_WAIT_TIME = 2.5  # ページ間の待機時間（秒）
 
 
 def create_affiliate_url(product_url: str) -> str:
@@ -58,9 +69,99 @@ def clean_text(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
-def scrape_deals() -> list[dict]:
-    """Plugin Boutiqueのセール情報をスクレイピング"""
+def scrape_single_page(page, url: str, seen_urls: set) -> list[dict]:
+    """単一ページから商品情報を取得"""
     products = []
+
+    try:
+        print(f"\nページを読み込み中: {url}")
+        page.goto(url, timeout=REQUEST_TIMEOUT, wait_until="networkidle")
+
+        # 商品カードが読み込まれるまで待機
+        selectors_to_try = [
+            "a[href*='/product/']",
+            "[data-testid='product-card']",
+            ".product-card",
+            "[class*='ProductCard']"
+        ]
+
+        loaded = False
+        for selector in selectors_to_try:
+            try:
+                page.wait_for_selector(selector, timeout=WAIT_FOR_SELECTOR_TIMEOUT)
+                loaded = True
+                break
+            except PlaywrightTimeout:
+                continue
+
+        if not loaded:
+            print("  警告: 商品カードの読み込みを待機中にタイムアウト")
+            time.sleep(3)
+
+        # ページをスクロールして遅延読み込みコンテンツを取得
+        for _ in range(3):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(0.5)
+
+        # 商品リンクを取得
+        product_links = page.query_selector_all("a[href*='/product/']")
+        print(f"  商品リンクを {len(product_links)} 件検出")
+
+        for link in product_links:
+            try:
+                href = link.get_attribute("href")
+                if not href or href in seen_urls:
+                    continue
+
+                # /product/ を含むURLのみ処理
+                if "/product/" not in href:
+                    continue
+
+                seen_urls.add(href)
+
+                # 親要素（商品カード）を探す
+                card = link
+                for _ in range(5):
+                    parent = card.evaluate_handle("el => el.parentElement")
+                    if parent:
+                        card = parent.as_element()
+                        if card is None:
+                            break
+                        class_name = card.get_attribute("class") or ""
+                        if any(keyword in class_name.lower() for keyword in ["card", "product", "item", "deal"]):
+                            break
+                    else:
+                        break
+
+                # テキストコンテンツを取得
+                card_text = card.inner_text() if card else link.inner_text()
+
+                # 商品情報を抽出
+                product_data = extract_product_info(card_text, href)
+
+                if product_data.get("plugin_name"):
+                    products.append(product_data)
+
+            except Exception as e:
+                print(f"  商品情報の取得中にエラー: {e}")
+                continue
+
+        print(f"  このページから {len(products)} 件取得")
+
+    except PlaywrightTimeout as e:
+        print(f"  タイムアウトエラー: {e}")
+    except Exception as e:
+        print(f"  スクレイピング中にエラー: {e}")
+
+    return products
+
+
+def scrape_deals() -> list[dict]:
+    """複数のカテゴリページからセール情報をスクレイピング"""
+    all_products = []
+    seen_urls = set()  # 全ページで共有する重複チェック用
 
     with sync_playwright() as p:
         # ブラウザを起動（ヘッドレスモード）
@@ -74,108 +175,22 @@ def scrape_deals() -> list[dict]:
         page = context.new_page()
 
         try:
-            print(f"ページを読み込み中: {DEALS_URL}")
-            page.goto(DEALS_URL, timeout=REQUEST_TIMEOUT, wait_until="networkidle")
+            for i, url in enumerate(DEALS_URLS):
+                # ページ間の待機（最初のページ以外）
+                if i > 0:
+                    print(f"\n--- 待機中 ({PAGE_WAIT_TIME}秒) ---")
+                    time.sleep(PAGE_WAIT_TIME)
 
-            # 商品カードが読み込まれるまで待機
-            # 複数のセレクタを試行
-            selectors_to_try = [
-                "a[href*='/product/']",
-                "[data-testid='product-card']",
-                ".product-card",
-                "[class*='ProductCard']"
-            ]
+                print(f"\n[{i+1}/{len(DEALS_URLS)}] カテゴリページを処理中...")
+                products = scrape_single_page(page, url, seen_urls)
+                all_products.extend(products)
 
-            loaded = False
-            for selector in selectors_to_try:
-                try:
-                    page.wait_for_selector(selector, timeout=WAIT_FOR_SELECTOR_TIMEOUT)
-                    print(f"セレクタ '{selector}' で要素を検出")
-                    loaded = True
-                    break
-                except PlaywrightTimeout:
-                    continue
+                print(f"  累計: {len(all_products)} 件（重複除外済み）")
 
-            if not loaded:
-                print("警告: 商品カードの読み込みを待機中にタイムアウト")
-                # それでも続行を試みる
-                time.sleep(5)
-
-            # ページ全体をスクロールして遅延読み込みコンテンツを取得（50件以上読み込む）
-            print("ページをスクロール中...")
-            for i in range(10):
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(1.5)
-                # 現在の商品数をチェック
-                current_count = len(page.query_selector_all("a[href*='/product/']"))
-                print(f"  スクロール {i+1}/10: {current_count} 件検出")
-                if current_count >= 100:  # 十分な数が読み込まれたら終了
-                    break
-            page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(1)
-
-            # 商品リンクを取得
-            product_links = page.query_selector_all("a[href*='/product/']")
-            print(f"商品リンクを {len(product_links)} 件検出")
-
-            seen_urls = set()
-
-            for link in product_links:
-                # フィルタリング前に多めに取得するため、制限を緩める
-                if len(products) >= MAX_ITEMS * 3:
-                    break
-
-                try:
-                    href = link.get_attribute("href")
-                    if not href or href in seen_urls:
-                        continue
-
-                    # /product/ を含むURLのみ処理
-                    if "/product/" not in href:
-                        continue
-
-                    seen_urls.add(href)
-
-                    # 親要素（商品カード）を探す
-                    # 複数の階層を遡って商品情報を含む要素を探す
-                    card = link
-                    for _ in range(5):
-                        parent = card.evaluate_handle("el => el.parentElement")
-                        if parent:
-                            card = parent.as_element()
-                            if card is None:
-                                break
-                            # カードらしき要素かチェック
-                            class_name = card.get_attribute("class") or ""
-                            if any(keyword in class_name.lower() for keyword in ["card", "product", "item", "deal"]):
-                                break
-                        else:
-                            break
-
-                    # テキストコンテンツを取得
-                    card_text = card.inner_text() if card else link.inner_text()
-
-                    # 商品情報を抽出
-                    product_data = extract_product_info(card_text, href)
-
-                    if product_data.get("plugin_name"):
-                        products.append(product_data)
-                        print(f"  取得: {product_data['plugin_name']}")
-
-                except Exception as e:
-                    print(f"  商品情報の取得中にエラー: {e}")
-                    continue
-
-        except PlaywrightTimeout as e:
-            print(f"タイムアウトエラー: {e}")
-            raise
-        except Exception as e:
-            print(f"スクレイピング中にエラー: {e}")
-            raise
         finally:
             browser.close()
 
-    return products
+    return all_products
 
 
 def extract_name_from_url(href: str) -> str:
@@ -299,7 +314,7 @@ def main():
     print("=" * 60)
 
     try:
-        # スクレイピング実行
+        # スクレイピング実行（複数カテゴリページから取得）
         products = scrape_deals()
 
         if not products:
@@ -308,28 +323,22 @@ def main():
             save_to_csv([], OUTPUT_FILE)
             return 1
 
-        # 重複を排除（商品URLベース）
-        seen_urls = set()
-        unique_products = []
-        for product in products:
-            url = product.get("product_url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                unique_products.append(product)
-
-        print(f"\n取得件数: {len(unique_products)} 件（重複排除後）")
+        print(f"\n{'='*60}")
+        print(f"全カテゴリから取得: {len(products)} 件（重複除外済み）")
 
         # セール品のみフィルタリング（セール率と定価が両方あるもの）
         sale_products = [
-            p for p in unique_products
+            p for p in products
             if p.get("discount_rate") and p.get("original_price")
         ]
         print(f"セール品: {len(sale_products)} 件（フィルタリング後）")
 
-        # CSVに保存
-        save_to_csv(sale_products[:MAX_ITEMS], OUTPUT_FILE)
+        # CSVに保存（最大50件）
+        final_products = sale_products[:MAX_ITEMS]
+        save_to_csv(final_products, OUTPUT_FILE)
 
-        print("\n処理が完了しました")
+        print(f"\n最終出力: {len(final_products)} 件")
+        print("処理が完了しました")
         return 0
 
     except Exception as e:
