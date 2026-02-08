@@ -8,7 +8,7 @@ Plugin Boutiqueのセールページから商品情報を取得し、CSVファ�
 import csv
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -269,6 +269,29 @@ def extract_product_info(text: str, href: str) -> dict:
     return product_data
 
 
+def is_ending_soon(end_date_str: str, days_threshold: int = 2) -> bool:
+    """終了日がdays_threshold日以内かどうかを判定"""
+    if not end_date_str:
+        return False
+
+    try:
+        # "15 Feb" や "01 Mar" 形式をパース
+        now = datetime.now()
+
+        # 年がないので今年を仮定
+        date_with_year = f"{end_date_str} {now.year}"
+        end_date = datetime.strptime(date_with_year, "%d %b %Y")
+
+        # 年末に来年1-3月のセールが出る場合の補正
+        if end_date < now - timedelta(days=60):
+            end_date = end_date.replace(year=now.year + 1)
+
+        remaining = (end_date - now).days
+        return remaining < days_threshold
+    except (ValueError, TypeError):
+        return False
+
+
 def save_to_csv(products: list[dict], output_file: Path) -> None:
     """商品情報をCSVファイルに保存"""
     # 出力ディレクトリを作成
@@ -329,8 +352,15 @@ def main():
         ]
         print(f"セール品: {len(sale_products)} 件（フィルタリング後）")
 
+        # 終了日が2日以内のセールを除外
+        active_products = [
+            p for p in sale_products
+            if not is_ending_soon(p.get("end_date", ""), days_threshold=2)
+        ]
+        print(f"有効なセール: {len(active_products)} 件（終了間近を除外）")
+
         # CSVに保存（最大50件）
-        final_products = sale_products[:MAX_ITEMS]
+        final_products = active_products[:MAX_ITEMS]
         save_to_csv(final_products, OUTPUT_FILE)
 
         print(f"\n最終出力: {len(final_products)} 件")
